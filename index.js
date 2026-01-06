@@ -7,37 +7,37 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
-const OpenAI = require('openai'); // Added for AI features
+const OpenAI = require('openai'); // Required for AI features
 
-// Models (Ensure these files exist in your 'models' folder)
+// --- MODELS ---
+// Ensure you have these files in a 'models' folder, 
+// or define them here if you want a single-file server.
 const User = require('./models/User');
 const Note = require('./models/Note');
 const Notification = require('./models/Notification');
 
 const app = express();
 
-// Middleware
-app.use(cors());
+// --- MIDDLEWARE ---
+app.use(cors()); // Fixes CORS Network Errors
 app.use(express.json());
 
-// Database Connection
+// --- DATABASE ---
 mongoose.connect(process.env.MONGO_URI)
   .then(() => console.log('✅ MongoDB Connected'))
   .catch(err => console.error('❌ MongoDB Connection Error:', err));
 
-// Cloudinary Config
+// --- CONFIGURATION ---
 cloudinary.config({
   cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
   api_key: process.env.CLOUDINARY_API_KEY,
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
-// OpenAI Config
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY, 
 });
 
-// Multer Storage for Image Uploads
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: { folder: 'notifications' },
@@ -48,17 +48,17 @@ const upload = multer({ storage: storage });
 const verifyToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
   
-  // Check if header exists and has the 'Bearer ' prefix
+  // 1. Check if header exists and starts with "Bearer "
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
     return res.status(403).json({ error: "No token provided or invalid format" });
   }
 
-  // Extract the token (remove "Bearer " string)
+  // 2. Extract the token (remove "Bearer " string)
   const token = authHeader.split(' ')[1];
 
   jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
     if (err) return res.status(403).json({ error: "Invalid token" });
-    req.user = decoded; // Attach user data to request
+    req.user = decoded;
     next();
   });
 };
@@ -102,7 +102,6 @@ app.post('/api/login', async (req, res) => {
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ error: 'Invalid credentials' });
 
-    // Create Token
     const token = jwt.sign(
       { id: user._id, role: user.role }, 
       process.env.JWT_SECRET, 
@@ -116,7 +115,7 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// 3. Notes (User Feature) - CRUD
+// 3. Notes (User Feature)
 app.get('/api/notes', verifyToken, async (req, res) => {
   try {
     const notes = await Note.find({ userId: req.user.id }).sort({ createdAt: -1 });
@@ -136,7 +135,7 @@ app.post('/api/notes', verifyToken, async (req, res) => {
   }
 });
 
-// 4. NEW ROUTE: AI Summarization (Fixes Network/CORS Error)
+// 4. AI Summarization (This Route Fixes Your OpenAI Error)
 app.post('/api/ai/summarize', verifyToken, async (req, res) => {
   try {
     const { text } = req.body;
@@ -153,11 +152,12 @@ app.post('/api/ai/summarize', verifyToken, async (req, res) => {
     res.json({ content: response.choices[0].message.content });
   } catch (err) {
     console.error("OpenAI Error:", err);
+    // Handle quota exceeded or network issues gracefully
     res.status(500).json({ error: "Failed to fetch summary" });
   }
 });
 
-// 5. Notifications (Admin Feature - Upload)
+// 5. Notifications (Admin Feature)
 app.post('/api/notifications', verifyToken, verifyAdmin, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "Image is required" });
@@ -174,7 +174,7 @@ app.post('/api/notifications', verifyToken, verifyAdmin, upload.single('image'),
   }
 });
 
-// 6. Public: Get Notifications
+// 6. Public Notifications
 app.get('/api/notifications', async (req, res) => {
   try {
     const notifs = await Notification.find().sort({ createdAt: -1 });
@@ -184,6 +184,6 @@ app.get('/api/notifications', async (req, res) => {
   }
 });
 
-// Start Server
+// --- SERVER START ---
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
