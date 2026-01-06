@@ -7,13 +7,16 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
+const OpenAI = require('openai'); // Added for AI features
 
-// Models
+// Models (Ensure these files exist in your 'models' folder)
 const User = require('./models/User');
 const Note = require('./models/Note');
 const Notification = require('./models/Notification');
 
 const app = express();
+
+// Middleware
 app.use(cors());
 app.use(express.json());
 
@@ -29,26 +32,39 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
+// OpenAI Config
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY, 
+});
+
+// Multer Storage for Image Uploads
 const storage = new CloudinaryStorage({
   cloudinary: cloudinary,
   params: { folder: 'notifications' },
 });
 const upload = multer({ storage: storage });
 
-// --- MIDDLEWARE ---
+// --- AUTH MIDDLEWARE (FIXED) ---
 const verifyToken = (req, res, next) => {
-  const token = req.headers['authorization'];
-  if (!token) return res.status(403).json({ error: "No token provided" });
+  const authHeader = req.headers['authorization'];
   
+  // Check if header exists and has the 'Bearer ' prefix
+  if (!authHeader || !authHeader.startsWith('Bearer ')) {
+    return res.status(403).json({ error: "No token provided or invalid format" });
+  }
+
+  // Extract the token (remove "Bearer " string)
+  const token = authHeader.split(' ')[1];
+
   jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
     if (err) return res.status(403).json({ error: "Invalid token" });
-    req.user = decoded;
+    req.user = decoded; // Attach user data to request
     next();
   });
 };
 
 const verifyAdmin = (req, res, next) => {
-  if (req.user.role !== 'admin') {
+  if (!req.user || req.user.role !== 'admin') {
     return res.status(403).json({ message: "Access denied. Admins only." });
   }
   next();
@@ -61,14 +77,10 @@ app.post('/api/signup', async (req, res) => {
   try {
     const { username, email, password, role } = req.body;
 
-    // Check if user exists
     const existingUser = await User.findOne({ email });
     if (existingUser) return res.status(400).json({ message: "User already exists" });
 
-    // Hash Password
     const hashedPassword = await bcrypt.hash(password, 10);
-
-    // Save User
     const newUser = new User({ username, email, password: hashedPassword, role });
     await newUser.save();
 
@@ -84,19 +96,17 @@ app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
     
-    // Find User
     const user = await User.findOne({ email });
     if (!user) return res.status(400).json({ error: 'User not found' });
 
-    // Check Password
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ error: 'Invalid credentials' });
 
-    // Generate Token
+    // Create Token
     const token = jwt.sign(
       { id: user._id, role: user.role }, 
       process.env.JWT_SECRET, 
-      { expiresIn: '1h' } // Good practice to expire tokens
+      { expiresIn: '1h' }
     );
 
     res.json({ token, role: user.role });
@@ -106,10 +116,10 @@ app.post('/api/login', async (req, res) => {
   }
 });
 
-// 3. Notes (User Feature)
+// 3. Notes (User Feature) - CRUD
 app.get('/api/notes', verifyToken, async (req, res) => {
   try {
-    const notes = await Note.find({ userId: req.user.id });
+    const notes = await Note.find({ userId: req.user.id }).sort({ createdAt: -1 });
     res.json(notes);
   } catch (err) {
     res.status(500).json({ error: "Error fetching notes" });
@@ -126,14 +136,35 @@ app.post('/api/notes', verifyToken, async (req, res) => {
   }
 });
 
-// 4. Notifications (Admin Feature - Upload)
+// 4. NEW ROUTE: AI Summarization (Fixes Network/CORS Error)
+app.post('/api/ai/summarize', verifyToken, async (req, res) => {
+  try {
+    const { text } = req.body;
+    
+    const response = await openai.chat.completions.create({
+      model: "gpt-3.5-turbo",
+      messages: [
+        { role: "system", content: "You are a helpful assistant that summarizes notes." },
+        { role: "user", content: `Summarize this text: ${text}` }
+      ],
+      max_tokens: 150
+    });
+
+    res.json({ content: response.choices[0].message.content });
+  } catch (err) {
+    console.error("OpenAI Error:", err);
+    res.status(500).json({ error: "Failed to fetch summary" });
+  }
+});
+
+// 5. Notifications (Admin Feature - Upload)
 app.post('/api/notifications', verifyToken, verifyAdmin, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "Image is required" });
 
     const newNotif = new Notification({
       message: req.body.message,
-      imageUrl: req.file.path // Cloudinary URL automatically added here
+      imageUrl: req.file.path
     });
     await newNotif.save();
     res.json(newNotif);
@@ -143,7 +174,7 @@ app.post('/api/notifications', verifyToken, verifyAdmin, upload.single('image'),
   }
 });
 
-// 5. Public: Get Notifications (Home Page)
+// 6. Public: Get Notifications
 app.get('/api/notifications', async (req, res) => {
   try {
     const notifs = await Notification.find().sort({ createdAt: -1 });
@@ -154,4 +185,5 @@ app.get('/api/notifications', async (req, res) => {
 });
 
 // Start Server
-app.listen(process.env.PORT, () => console.log(`🚀 Server running on port ${process.env.PORT}`));
+const PORT = process.env.PORT || 10000;
+app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
