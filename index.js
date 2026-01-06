@@ -184,6 +184,75 @@ app.get('/api/notifications', async (req, res) => {
   }
 });
 
+
+
+// ... inside index.js, look for the Notes section ...
+
+// 3. Notes (User Feature) - CRUD
+
+// GET: Fetch all notes
+app.get('/api/notes', verifyToken, async (req, res) => {
+  try {
+    const notes = await Note.find({ userId: req.user.id }).sort({ createdAt: -1 });
+    res.json(notes);
+  } catch (err) {
+    res.status(500).json({ error: "Error fetching notes" });
+  }
+});
+
+// POST: Create a note
+app.post('/api/notes', verifyToken, async (req, res) => {
+  try {
+    // Basic title generation from content if missing
+    const title = req.body.title || req.body.content.substring(0, 30) + "...";
+    
+    const newNote = new Note({ 
+        userId: req.user.id, 
+        title: title,
+        content: req.body.content 
+    });
+    await newNote.save();
+    res.json(newNote);
+  } catch (err) {
+    res.status(500).json({ error: "Error saving note" });
+  }
+});
+
+// --- ADD THESE NEW ROUTES BELOW ---
+
+// PUT: Edit a note
+app.put('/api/notes/:id', verifyToken, async (req, res) => {
+  try {
+    const { title, content } = req.body;
+    // Find note by ID AND ensure it belongs to the logged-in user
+    const updatedNote = await Note.findOneAndUpdate(
+      { _id: req.params.id, userId: req.user.id },
+      { title, content },
+      { new: true } // Return the updated document
+    );
+
+    if (!updatedNote) return res.status(404).json({ error: "Note not found or unauthorized" });
+    res.json(updatedNote);
+  } catch (err) {
+    res.status(500).json({ error: "Error updating note" });
+  }
+});
+
+// DELETE: Delete a note
+app.delete('/api/notes/:id', verifyToken, async (req, res) => {
+  try {
+    const deletedNote = await Note.findOneAndDelete({ 
+      _id: req.params.id, 
+      userId: req.user.id 
+    });
+
+    if (!deletedNote) return res.status(404).json({ error: "Note not found or unauthorized" });
+    res.json({ message: "Note deleted successfully" });
+  } catch (err) {
+    res.status(500).json({ error: "Error deleting note" });
+  }
+});
+
 // --- SERVER START ---
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
