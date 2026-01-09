@@ -7,11 +7,10 @@ const jwt = require('jsonwebtoken');
 const multer = require('multer');
 const cloudinary = require('cloudinary').v2;
 const { CloudinaryStorage } = require('multer-storage-cloudinary');
-const OpenAI = require('openai'); // Required for AI features
+// ✅ Import OpenAI
+const OpenAI = require('openai'); 
 
 // --- MODELS ---
-// Ensure you have these files in a 'models' folder, 
-// or define them here if you want a single-file server.
 const User = require('./models/User');
 const Note = require('./models/Note');
 const Notification = require('./models/Notification');
@@ -19,7 +18,7 @@ const Notification = require('./models/Notification');
 const app = express();
 
 // --- MIDDLEWARE ---
-app.use(cors()); // Fixes CORS Network Errors
+app.use(cors());
 app.use(express.json());
 
 // --- DATABASE ---
@@ -34,6 +33,11 @@ cloudinary.config({
   api_secret: process.env.CLOUDINARY_API_SECRET
 });
 
+// ✅ OPENAI SETUP
+if (!process.env.OPENAI_API_KEY) {
+  console.error("❌ ERROR: OPENAI_API_KEY is missing!");
+}
+
 const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY, 
 });
@@ -44,18 +48,13 @@ const storage = new CloudinaryStorage({
 });
 const upload = multer({ storage: storage });
 
-// --- AUTH MIDDLEWARE (FIXED) ---
+// --- AUTH MIDDLEWARE ---
 const verifyToken = (req, res, next) => {
   const authHeader = req.headers['authorization'];
-  
-  // 1. Check if header exists and starts with "Bearer "
   if (!authHeader || !authHeader.startsWith('Bearer ')) {
-    return res.status(403).json({ error: "No token provided or invalid format" });
+    return res.status(403).json({ error: "No token provided" });
   }
-
-  // 2. Extract the token (remove "Bearer " string)
   const token = authHeader.split(' ')[1];
-
   jwt.verify(token, process.env.JWT_SECRET, (err, decoded) => {
     if (err) return res.status(403).json({ error: "Invalid token" });
     req.user = decoded;
@@ -72,187 +71,106 @@ const verifyAdmin = (req, res, next) => {
 
 // --- ROUTES ---
 
-// 1. Auth: Signup
+// 1. Auth
 app.post('/api/signup', async (req, res) => {
   try {
     const { username, email, password, role } = req.body;
-
     const existingUser = await User.findOne({ email });
-    if (existingUser) return res.status(400).json({ message: "User already exists" });
-
+    if (existingUser) return res.status(400).json({ message: "User exists" });
     const hashedPassword = await bcrypt.hash(password, 10);
     const newUser = new User({ username, email, password: hashedPassword, role });
     await newUser.save();
-
-    res.status(201).json({ message: 'User created successfully' });
-  } catch (err) {
-    console.error("Signup Error:", err);
-    res.status(500).json({ error: "Server error during signup" });
-  }
+    res.status(201).json({ message: 'User created' });
+  } catch (err) { res.status(500).json({ error: "Signup error" }); }
 });
 
-// 2. Auth: Login
 app.post('/api/login', async (req, res) => {
   try {
     const { email, password } = req.body;
-    
     const user = await User.findOne({ email });
     if (!user) return res.status(400).json({ error: 'User not found' });
-
     const isMatch = await bcrypt.compare(password, user.password);
     if (!isMatch) return res.status(400).json({ error: 'Invalid credentials' });
-
-    const token = jwt.sign(
-      { id: user._id, role: user.role }, 
-      process.env.JWT_SECRET, 
-      { expiresIn: '1h' }
-    );
-
+    const token = jwt.sign({ id: user._id, role: user.role }, process.env.JWT_SECRET, { expiresIn: '7d' });
     res.json({ token, role: user.role });
-  } catch (err) {
-    console.error("Login Error:", err);
-    res.status(500).json({ error: "Server error during login" });
-  }
+  } catch (err) { res.status(500).json({ error: "Login error" }); }
 });
 
-// 3. Notes (User Feature)
+// 2. Notes
 app.get('/api/notes', verifyToken, async (req, res) => {
   try {
     const notes = await Note.find({ userId: req.user.id }).sort({ createdAt: -1 });
     res.json(notes);
-  } catch (err) {
-    res.status(500).json({ error: "Error fetching notes" });
-  }
+  } catch (err) { res.status(500).json({ error: "Error fetching notes" }); }
 });
 
 app.post('/api/notes', verifyToken, async (req, res) => {
   try {
-    const newNote = new Note({ userId: req.user.id, content: req.body.content });
+    const title = req.body.title || (req.body.content ? req.body.content.substring(0, 30) + "..." : "Untitled");
+    const newNote = new Note({ userId: req.user.id, title, content: req.body.content });
     await newNote.save();
     res.json(newNote);
-  } catch (err) {
-    res.status(500).json({ error: "Error saving note" });
-  }
+  } catch (err) { res.status(500).json({ error: "Error saving note" }); }
 });
 
-// 4. AI Summarization (This Route Fixes Your OpenAI Error)
+app.delete('/api/notes/:id', verifyToken, async (req, res) => {
+  try {
+    await Note.findOneAndDelete({ _id: req.params.id, userId: req.user.id });
+    res.json({ message: "Note deleted" });
+  } catch (err) { res.status(500).json({ error: "Error deleting note" }); }
+});
+
+// --- 3. AI SUMMARY (SWITCHED TO OPENAI) ---
 app.post('/api/ai/summarize', verifyToken, async (req, res) => {
   try {
     const { text } = req.body;
-    
+    if(!text) return res.status(400).json({error: "Text is required"});
+
+    console.log("🤖 OpenAI Request for:", text.substring(0, 20) + "...");
+
+    // ✅ Using GPT-4o-mini (Cheapest & Fast) or gpt-3.5-turbo
     const response = await openai.chat.completions.create({
-      model: "gpt-3.5-turbo",
+      model: "gpt-4o-mini", // Cost-effective model
       messages: [
-        { role: "system", content: "You are a helpful assistant that summarizes notes." },
-        { role: "user", content: `Summarize this text: ${text}` }
+        { role: "system", content: "You are a helpful assistant that summarizes notes concisely in bullet points." },
+        { role: "user", content: text }
       ],
-      max_tokens: 150
+      max_tokens: 200,
     });
 
-    res.json({ content: response.choices[0].message.content });
+    const textOutput = response.choices[0].message.content;
+
+    console.log("✅ OpenAI Success");
+    res.json({ content: textOutput });
+
   } catch (err) {
-    console.error("OpenAI Error:", err);
-    // Handle quota exceeded or network issues gracefully
-    res.status(500).json({ error: "Failed to fetch summary" });
+    console.error("❌ OpenAI Error Details:", err); 
+    
+    // Check for Quota Error specifically
+    if (err.status === 429) {
+        return res.status(429).json({ error: "OpenAI Quota Exceeded. Check billing." });
+    }
+
+    res.status(500).json({ error: "AI Service Failed", details: err.message });
   }
 });
 
-// 5. Notifications (Admin Feature)
+// 4. Notifications
 app.post('/api/notifications', verifyToken, verifyAdmin, upload.single('image'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "Image is required" });
-
-    const newNotif = new Notification({
-      message: req.body.message,
-      imageUrl: req.file.path
-    });
+    const newNotif = new Notification({ message: req.body.message, imageUrl: req.file.path });
     await newNotif.save();
     res.json(newNotif);
-  } catch (err) {
-    console.error("Upload Error:", err);
-    res.status(500).json({ error: "Error uploading notification" });
-  }
+  } catch (err) { res.status(500).json({ error: "Upload error" }); }
 });
 
-// 6. Public Notifications
 app.get('/api/notifications', async (req, res) => {
   try {
     const notifs = await Notification.find().sort({ createdAt: -1 });
     res.json(notifs);
-  } catch (err) {
-    res.status(500).json({ error: "Error fetching notifications" });
-  }
+  } catch (err) { res.status(500).json({ error: "Fetch error" }); }
 });
 
-
-
-// ... inside index.js, look for the Notes section ...
-
-// 3. Notes (User Feature) - CRUD
-
-// GET: Fetch all notes
-app.get('/api/notes', verifyToken, async (req, res) => {
-  try {
-    const notes = await Note.find({ userId: req.user.id }).sort({ createdAt: -1 });
-    res.json(notes);
-  } catch (err) {
-    res.status(500).json({ error: "Error fetching notes" });
-  }
-});
-
-// POST: Create a note
-app.post('/api/notes', verifyToken, async (req, res) => {
-  try {
-    // Basic title generation from content if missing
-    const title = req.body.title || req.body.content.substring(0, 30) + "...";
-    
-    const newNote = new Note({ 
-        userId: req.user.id, 
-        title: title,
-        content: req.body.content 
-    });
-    await newNote.save();
-    res.json(newNote);
-  } catch (err) {
-    res.status(500).json({ error: "Error saving note" });
-  }
-});
-
-// --- ADD THESE NEW ROUTES BELOW ---
-
-// PUT: Edit a note
-app.put('/api/notes/:id', verifyToken, async (req, res) => {
-  try {
-    const { title, content } = req.body;
-    // Find note by ID AND ensure it belongs to the logged-in user
-    const updatedNote = await Note.findOneAndUpdate(
-      { _id: req.params.id, userId: req.user.id },
-      { title, content },
-      { new: true } // Return the updated document
-    );
-
-    if (!updatedNote) return res.status(404).json({ error: "Note not found or unauthorized" });
-    res.json(updatedNote);
-  } catch (err) {
-    res.status(500).json({ error: "Error updating note" });
-  }
-});
-
-// DELETE: Delete a note
-app.delete('/api/notes/:id', verifyToken, async (req, res) => {
-  try {
-    const deletedNote = await Note.findOneAndDelete({ 
-      _id: req.params.id, 
-      userId: req.user.id 
-    });
-
-    if (!deletedNote) return res.status(404).json({ error: "Note not found or unauthorized" });
-    res.json({ message: "Note deleted successfully" });
-  } catch (err) {
-    res.status(500).json({ error: "Error deleting note" });
-  }
-});
-
-// --- SERVER START ---
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => console.log(`🚀 Server running on port ${PORT}`));
